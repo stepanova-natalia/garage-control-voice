@@ -1,7 +1,6 @@
 package pro.web4u.app.garage.voice.core.storage
 
 import android.content.Context
-import java.net.URI
 
 object ServerSettings {
 

@@ -18,10 +18,12 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import org.json.JSONObject
 import org.vosk.Model
 import org.vosk.Recognizer
 import pro.web4u.app.garage.voice.feature.garage.GarageApi
+import pro.web4u.app.garage.voice.feature.garage.GarageWebSocketClient
 import pro.web4u.app.garage.voice.feature.garage.GateCommandRequest
 import pro.web4u.app.garage.voice.feature.garage.LightCommandRequest
 import java.io.File
@@ -34,6 +36,7 @@ import javax.inject.Inject
 class VoiceService : Service() {
 
     @Inject lateinit var garageApi: GarageApi
+    @Inject lateinit var webSocketClient: GarageWebSocketClient
 
     companion object {
         private const val CHANNEL_ID = "voice_service_channel"
@@ -47,6 +50,8 @@ class VoiceService : Service() {
     private var audioRecord: AudioRecord? = null
     private var tts: TtsHelper? = null
     private var isSpeaking = false
+    private var isListeningForCommand = false
+    private var listeningtimeoutJob: kotlinx.coroutines.Job? = null
 
     override fun onBind(p0: Intent?): IBinder? = null
 
@@ -63,23 +68,21 @@ class VoiceService : Service() {
         scope.launch {
             try {
                 while (tts?.isReady() == false) delay(100)
-                tts?.speak("Привет!")
 
                 val modelDir = applicationContext.filesDir.absolutePath + "/model-ru"
                 copyModelFromAssets(modelDir)
                 model = Model(modelDir)
                 Log.d("VoiceService", "Model создан")
 
-                val grammar = """["джарвис", "открой", "закрой", "ворота", "включи", "выключи", "свет", "статус", "[unk]"]"""
+                val grammar = """["джарвис", "открой", "закрой", "ворота", "ворот", "включи", "выключи", "свет", "света", "статус", "[unk]"]"""
                 recognizer = Recognizer(model, 16000.0f, grammar)
-                while (tts?.isReady() == false) {
-                    delay(100)
-                }
-                tts?.speak("Я Джарвис. Готов к работе.")
+
+                tts?.speak("Привет!Я Джарвис. Готов к работе.")
                 delay(3000)
-                if (audioRecord?.state != AudioRecord.STATE_INITIALIZED) {
-                    startListening()
-                }
+
+                startListening()
+                startWebSocket()
+
                 if (audioRecord?.state != AudioRecord.STATE_INITIALIZED) {
                     tts?.speak("Ошибка микрофона, перезапустите приложение")
                     return@launch
@@ -118,19 +121,19 @@ class VoiceService : Service() {
         }
     }
 
-
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         return START_STICKY
     }
 
     override fun onDestroy() {
-        super.onDestroy()
         job.cancel()
         audioRecord?.stop()
         audioRecord?.release()
+        audioRecord = null
         recognizer?.close()
         model?.close()
         tts?.shutdown()
+        super.onDestroy()
     }
 
     private fun createNotificationChannel() {
@@ -146,35 +149,47 @@ class VoiceService : Service() {
     private fun buildNotification(): Notification {
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle("Голосовой помощник")
-            .setContentText("Слушаю...")
+            .setContentText("Джарвис ждет команды...")
             .setSmallIcon(R.drawable.ic_btn_speak_now)
             .build()
     }
 
-    private fun startListening() {
+    private suspend fun startListening() {
         val bufferSize = AudioRecord.getMinBufferSize(
             16000,
             AudioFormat.CHANNEL_IN_MONO,
             AudioFormat.ENCODING_PCM_16BIT
         )
-        try {
-            audioRecord = AudioRecord(
-                MediaRecorder.AudioSource.MIC,
-                16000,
-                AudioFormat.CHANNEL_IN_MONO,
-                AudioFormat.ENCODING_PCM_16BIT,
-                bufferSize
-            )
+        delay(500)
+        withContext(Dispatchers.Main) {
+            try {
+                audioRecord = AudioRecord(
+                    MediaRecorder.AudioSource.MIC,
+                    16000,
+                    AudioFormat.CHANNEL_IN_MONO,
+                    AudioFormat.ENCODING_PCM_16BIT,
+                    bufferSize
+                )
+            } catch (e: SecurityException) {
+                Log.e("VoiceService", "SecurityException: ${e.message}")
+                tts?.speak("Нет разрешения на микрофон")
+                return@withContext
+            } catch (e: Exception) {
+                Log.e("VoiceService", "Ошибка создания AudioRecord: ${e.message}")
+                tts?.speak("Ошибка микрофона")
+                return@withContext
+            }
             if (audioRecord?.state != AudioRecord.STATE_INITIALIZED) {
                 Log.e("VoiceService", "AudioRecord не инициализирован")
+                tts?.speak("Ошибка микрофона, перезапустите приложение")
+                return@withContext
             }
-        }catch (e: SecurityException){
-            Log.e("VoiceService", "Нет разрешения на микрофон: ${e.message}")
-            return
+            audioRecord?.startRecording()
         }
-        audioRecord?.startRecording()
 
-        scope.launch {
+        if(audioRecord?.state != AudioRecord.STATE_INITIALIZED) return
+
+        scope.launch(Dispatchers.IO) {
             val buffer = ShortArray(bufferSize)
             while (true) {
                 val read = audioRecord?.read(buffer, 0, buffer.size) ?: break
@@ -192,12 +207,36 @@ class VoiceService : Service() {
                         val json = JSONObject(result ?: "{}")
                         val text = json.optString("text")
                         if(text.isNotBlank()) {
+                            Log.d("VoiceService", "Текст: $text | Слушаю команду: $isListeningForCommand")
+                            if(!isListeningForCommand) {
+                                if(text.lowercase().contains("джарвис")){
+                                    isListeningForCommand = true
+                                    tts?.speak("Слушаю")
+                                    listeningtimeoutJob?.cancel()
+                                    listeningtimeoutJob = scope.launch {
+                                        delay(5000)
+                                        if(isListeningForCommand) {
+                                            isListeningForCommand = false
+                                            Log.d("VoiceService", "Таймаут — возврат в режим ожидания")
+                                        }
+                                    }
+                                }
+                            } else {
+                               val command = CommandParser.parse(text, "джарвис")
+                               if (command != Command.UNKNOWN) {
+                                   listeningtimeoutJob?.cancel()
+                                   isListeningForCommand = false
+                                   executeCommand(command)
+                               }
+                            }
                             val command = CommandParser.parse(text, "джарвис")
                             Log.d("VoiceService", "Текст: $text | Команда: $command")
                             if(command != Command.UNKNOWN) {
                                 executeCommand(command)
                             }
                         }
+
+
                     }
                 }
             }
@@ -252,22 +291,26 @@ class VoiceService : Service() {
                             tts?.speak("Выключаю свет")
                         }
                     }
-                    Command.STATUS -> {
-                        tts?.speak("Запрашиваю статус")
-                        val gateStatus = garageApi.gateStatus().status
-                        val lightStatus = garageApi.lightStatus().status
-                        val gateText = when (gateStatus){
-                            "open" -> "ворота открыты"
-                            "close" -> "ворота закрыты"
-                            "moving" -> "ворота в движении"
-                            else -> "статус ворот неизвестен"
+                    Command.GATE_STATUS -> {
+                        tts?.speak("Запрашиваю статус ворот")
+                        val status = garageApi.gateStatus().status
+                        val text = when (status) {
+                            "open" -> "Ворота открыты"
+                            "close" -> "Ворота закрыты"
+                            "moving" -> "Ворота в движении"
+                            else -> "Статус ворот неизвестен"
                         }
-                        val lightText = when (lightStatus){
-                            "on" -> "свет включен"
-                            "off" -> "свет выключен"
-                            else -> "статус света неизвестен"
+                        tts?.speak(text)
+                    }
+                    Command.LIGHT_STATUS -> {
+                        tts?.speak("Запрашиваю статус света")
+                        val status = garageApi.lightStatus().status
+                        val text = when (status) {
+                            "on" -> "Свет включён"
+                            "off" -> "Свет выключен"
+                            else -> "Статус света неизвестен"
                         }
-                        tts?.speak("$gateText, $lightText")
+                        tts?.speak(text)
                     }
                     Command.UNKNOWN -> {
                         tts?.speak("Команда не распознана")
@@ -297,5 +340,20 @@ class VoiceService : Service() {
             if (attempt < 2) tts?.speak("Всё еще в движении, жду")
         }
         tts?.speak("Ворота долго в движении, проверьте вручную")
+    }
+
+    private fun startWebSocket(){
+        scope.launch {
+            webSocketClient.observeGateStatus()
+                .collect { status ->
+                    val text = when(status) {
+                        "open" -> "Ворота открыты"
+                        "close" -> "Ворота закрыты"
+                        else -> null
+                    }
+                    text?.let { tts?.speak(it) }
+                    Log.d("VoiceService", "Статус ворот: $status")
+                }
+        }
     }
 }
