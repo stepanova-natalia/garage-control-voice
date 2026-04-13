@@ -8,20 +8,22 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.layout.*
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Settings
-import androidx.compose.material3.*
+import androidx.activity.viewModels
 import androidx.compose.runtime.*
-import androidx.compose.ui.Alignment
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
-import pro.web4u.app.garage.voice.service.VoiceService
-import pro.web4u.app.garage.voice.ui.SettingsScreen
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import dagger.hilt.android.AndroidEntryPoint
+import pro.web4u.app.garage.voice.feature.voice.VoiceService
+import pro.web4u.app.garage.voice.ui.login.LoginScreen
+import pro.web4u.app.garage.voice.ui.login.LoginViewModel
+import pro.web4u.app.garage.voice.ui.main.MainScreen
+import pro.web4u.app.garage.voice.ui.settings.SettingsScreen
 import pro.web4u.app.garage.voice.ui.theme.GarageVoiceTheme
 
+@AndroidEntryPoint
 class MainActivity : ComponentActivity() {
+
+    private val loginViewModel: LoginViewModel by viewModels()
 
     private val requestPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
@@ -32,18 +34,33 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
-        checkAndRequestPermission()
 
         setContent {
             GarageVoiceTheme {
+                val isLoggedIn by loginViewModel.isLoggedIn.collectAsStateWithLifecycle()
+                val isLoading by loginViewModel.isLoading.collectAsStateWithLifecycle()
+                val error by loginViewModel.error.collectAsStateWithLifecycle()
                 var showSettings by remember { mutableStateOf(false) }
-                if(showSettings){
-                    SettingsScreen(
-                        context = this,
-                        onBack = { showSettings = false }
-                    )
-                } else {
-                    MainScreen(onSettingsClick = { showSettings = true })
+                when {
+                    !isLoggedIn -> {
+                        LoginScreen(
+                            isLoading = isLoading,
+                            error = error,
+                            onLogin = { username, password ->
+                                loginViewModel.login(username, password)
+                            }
+                        )
+                    }
+                    showSettings -> {
+                        SettingsScreen(
+                            context = this,
+                            onBack = { showSettings = false }
+                        )
+                    }
+                    else -> {
+                        checkAndRequestPermission()
+                        MainScreen(onSettingsClick = { showSettings = true })
+                    }
                 }
             }
         }
@@ -60,41 +77,7 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun startVoiceService() {
+        android.util.Log.d("MainActivity", "Запускаем сервис")
         startForegroundService(Intent(this, VoiceService::class.java))
-    }
-}
-
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-fun MainScreen(onSettingsClick: () -> Unit) {
-    Scaffold(
-        topBar = {
-            TopAppBar(
-                title = { Text("Голосовой помощник") },
-                actions = {
-                    IconButton(onClick = onSettingsClick) {
-                        Icon(Icons.Default.Settings, contentDescription = "Настройки")
-                    }
-                }
-            )
-        }
-    ) { padding ->
-        Column(
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(8.dp),
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(padding)
-                .padding(32.dp)
-        ) {
-            Text("Джарвис слушает...", style = MaterialTheme.typography.headlineSmall)
-            Spacer(modifier = Modifier.height(16.dp))
-            Text("Доступные команды:", style = MaterialTheme.typography.titleMedium)
-            Text("• Джарвис, открой ворота")
-            Text("• Джарвис, закрой ворота")
-            Text("• Джарвис, включи свет")
-            Text("• Джарвис, выключи свет")
-            Text("• Джарвис, статус")
-        }
     }
 }

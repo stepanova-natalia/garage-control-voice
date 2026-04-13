@@ -1,4 +1,4 @@
-package pro.web4u.app.garage.voice.service
+package pro.web4u.app.garage.voice.feature.voice
 
 import android.content.Context
 import android.speech.tts.TextToSpeech
@@ -13,7 +13,7 @@ class TtsHelper(context: Context, private val onSpeakingChanged: (Boolean) -> Un
 
     init {
         tts = TextToSpeech(context) { status ->
-            if(status == TextToSpeech.SUCCESS) {
+            if (status == TextToSpeech.SUCCESS) {
                 tts?.language = Locale("ru")
                 isReady = true
                 Log.d("TtsHelper", "TTS готов")
@@ -21,6 +21,7 @@ class TtsHelper(context: Context, private val onSpeakingChanged: (Boolean) -> Un
                     override fun onStart(utteranceId: String?) {
                         onSpeakingChanged(true)
                     }
+
                     override fun onDone(utteranceId: String?) {
                         onSpeakingChanged(false)
                     }
@@ -47,4 +48,6 @@ class TtsHelper(context: Context, private val onSpeakingChanged: (Boolean) -> Un
         tts?.stop()
         tts?.shutdown()
     }
+
+    fun isReady(): Boolean = isReady
 }

@@ -1,4 +1,4 @@
-package pro.web4u.app.garage.voice.parser
+package pro.web4u.app.garage.voice.feature.voice
 
 enum class Command {
     GATE_OPEN,

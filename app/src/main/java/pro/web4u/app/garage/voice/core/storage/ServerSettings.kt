@@ -1,6 +1,7 @@
-package pro.web4u.app.garage.voice.api
+package pro.web4u.app.garage.voice.core.storage
 
 import android.content.Context
+import java.net.URI
 
 object ServerSettings {
 
@@ -17,4 +18,6 @@ object ServerSettings {
         val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         prefs.edit().putString(KEY_SERVER_URL, url).apply()
     }
+
+
 }

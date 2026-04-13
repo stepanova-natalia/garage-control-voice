@@ -1,5 +1,6 @@
-package pro.web4u.app.garage.voice.service
+package pro.web4u.app.garage.voice.feature.voice
 
+import android.R
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -11,6 +12,7 @@ import android.media.MediaRecorder
 import android.os.IBinder
 import android.util.Log
 import androidx.core.app.NotificationCompat
+import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -19,18 +21,19 @@ import kotlinx.coroutines.launch
 import org.json.JSONObject
 import org.vosk.Model
 import org.vosk.Recognizer
-import pro.web4u.app.garage.voice.api.ApiClient
-import pro.web4u.app.garage.voice.api.GateRequest
-import pro.web4u.app.garage.voice.api.LightRequest
-import pro.web4u.app.garage.voice.parser.Command
-import pro.web4u.app.garage.voice.parser.CommandParser
+import pro.web4u.app.garage.voice.feature.garage.GarageApi
+import pro.web4u.app.garage.voice.feature.garage.GateCommandRequest
+import pro.web4u.app.garage.voice.feature.garage.LightCommandRequest
 import java.io.File
 import java.io.FileOutputStream
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
-import java.util.UUID
+import javax.inject.Inject
 
+@AndroidEntryPoint
 class VoiceService : Service() {
+
+    @Inject lateinit var garageApi: GarageApi
 
     companion object {
         private const val CHANNEL_ID = "voice_service_channel"
@@ -48,23 +51,39 @@ class VoiceService : Service() {
     override fun onBind(p0: Intent?): IBinder? = null
 
     override fun onCreate() {
+        Log.d("VoiceService", "onCreate вызван")
         super.onCreate()
         createNotificationChannel()
         startForeground(NOTIFICATION_ID, buildNotification())
-        tts = TtsHelper(this) { speaking -> isSpeaking = speaking}
+        tts = TtsHelper(this) { speaking -> isSpeaking = speaking }
         initVosk()
     }
 
     private fun initVosk() {
         scope.launch {
             try {
-                val modelDir = applicationContext.filesDir.absolutePath+"/model-ru"
+                while (tts?.isReady() == false) delay(100)
+                tts?.speak("Привет!")
+
+                val modelDir = applicationContext.filesDir.absolutePath + "/model-ru"
                 copyModelFromAssets(modelDir)
                 model = Model(modelDir)
-                recognizer = Recognizer(model, 16000.0f)
-                startListening()
-                delay(1500)
-                tts?.speak("Привет! Я Джарвис. Готов к работе.")
+                Log.d("VoiceService", "Model создан")
+
+                val grammar = """["джарвис", "открой", "закрой", "ворота", "включи", "выключи", "свет", "статус", "[unk]"]"""
+                recognizer = Recognizer(model, 16000.0f, grammar)
+                while (tts?.isReady() == false) {
+                    delay(100)
+                }
+                tts?.speak("Я Джарвис. Готов к работе.")
+                delay(3000)
+                if (audioRecord?.state != AudioRecord.STATE_INITIALIZED) {
+                    startListening()
+                }
+                if (audioRecord?.state != AudioRecord.STATE_INITIALIZED) {
+                    tts?.speak("Ошибка микрофона, перезапустите приложение")
+                    return@launch
+                }
                 Log.d("VoiceService", "Vosk модель загружена")
             } catch (e: Exception) {
                 Log.e("VoiceService", "Ошибка загрузки модели: ${e.message}")
@@ -74,24 +93,24 @@ class VoiceService : Service() {
 
     private fun copyModelFromAssets(destPath: String) {
         val dest = File(destPath)
-        if(dest.exists()) return
+        if (dest.exists()) return
         dest.mkdirs()
         copyAssetFolder("model-ru", destPath)
     }
 
     private fun copyAssetFolder(assetPath: String, destPath: String) {
         val assets = applicationContext.assets.list(assetPath) ?: return
-        if(assets.isEmpty()){
+        if (assets.isEmpty()) {
             copyAssetFile(assetPath, destPath)
             return
         }
         File(destPath).mkdirs()
-        for(asset in assets) {
+        for (asset in assets) {
             copyAssetFolder("$assetPath/$asset", "$destPath/$asset")
         }
     }
 
-    private fun copyAssetFile(assetPath: String, destPath: String){
+    private fun copyAssetFile(assetPath: String, destPath: String) {
         applicationContext.assets.open(assetPath).use { input ->
             FileOutputStream(destPath).use { output ->
                 input.copyTo(output)
@@ -99,14 +118,18 @@ class VoiceService : Service() {
         }
     }
 
+
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         return START_STICKY
     }
 
     override fun onDestroy() {
         super.onDestroy()
+        job.cancel()
         audioRecord?.stop()
         audioRecord?.release()
+        recognizer?.close()
+        model?.close()
         tts?.shutdown()
     }
 
@@ -124,7 +147,7 @@ class VoiceService : Service() {
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle("Голосовой помощник")
             .setContentText("Слушаю...")
-            .setSmallIcon(android.R.drawable.ic_btn_speak_now)
+            .setSmallIcon(R.drawable.ic_btn_speak_now)
             .build()
     }
 
@@ -142,11 +165,13 @@ class VoiceService : Service() {
                 AudioFormat.ENCODING_PCM_16BIT,
                 bufferSize
             )
+            if (audioRecord?.state != AudioRecord.STATE_INITIALIZED) {
+                Log.e("VoiceService", "AudioRecord не инициализирован")
+            }
         }catch (e: SecurityException){
             Log.e("VoiceService", "Нет разрешения на микрофон: ${e.message}")
             return
         }
-
         audioRecord?.startRecording()
 
         scope.launch {
@@ -182,27 +207,67 @@ class VoiceService : Service() {
     private fun executeCommand(command: Command) {
         scope.launch {
             try {
-                val api = ApiClient.getApi(this@VoiceService)
-                val id = UUID.randomUUID().toString()
                 when (command) {
                     Command.GATE_OPEN -> {
-                        api.gate(GateRequest("open", id))
-                        tts?.speak("Открываю ворота")
+                        tts?.speak("Проверяю статус ворот")
+                        val status = garageApi.gateStatus().status
+                        when (status) {
+                            "open" -> tts?.speak("Ворота уже открыты")
+                            "moving" -> handleMoving()
+                            else -> {
+                                garageApi.gate(GateCommandRequest("open"))
+                                tts?.speak("Открываю ворота")
+                            }
+                        }
                     }
                     Command.GATE_CLOSE -> {
-                        api.gate(GateRequest("close", id))
-                        tts?.speak("Закрываю ворота")
+                        tts?.speak("Проверяю статус ворот")
+                        val status = garageApi.gateStatus().status
+                        when (status){
+                            "close" -> tts?.speak("Ворота уже закрыты")
+                            "moving" -> handleMoving()
+                            else -> {
+                                garageApi.gate(GateCommandRequest("close"))
+                                tts?.speak("Закрываю ворота")
+                            }
+                        }
                     }
                     Command.LIGHT_ON -> {
-                        api.light(LightRequest("on", id))
-                        tts?.speak("Включаю свет")
+                        tts?.speak("Проверяю статус света")
+                        val status = garageApi.lightStatus().status
+                        if(status == "on") {
+                            tts?.speak("Свет уже включен")
+                        }else{
+                            garageApi.light(LightCommandRequest("on"))
+                            tts?.speak("Включаю свет")
+                        }
                     }
                     Command.LIGHT_OFF -> {
-                        api.light(LightRequest("off", id))
-                        tts?.speak("Выключаю свет")
+                        tts?.speak("Проверяю статус света")
+                        val status = garageApi.lightStatus().status
+                        if(status == "off") {
+                            tts?.speak("Свет уже выключен")
+                        }else{
+                            garageApi.light(LightCommandRequest("off"))
+                            tts?.speak("Выключаю свет")
+                        }
                     }
                     Command.STATUS -> {
                         tts?.speak("Запрашиваю статус")
+                        val gateStatus = garageApi.gateStatus().status
+                        val lightStatus = garageApi.lightStatus().status
+                        val gateText = when (gateStatus){
+                            "open" -> "ворота открыты"
+                            "close" -> "ворота закрыты"
+                            "moving" -> "ворота в движении"
+                            else -> "статус ворот неизвестен"
+                        }
+                        val lightText = when (lightStatus){
+                            "on" -> "свет включен"
+                            "off" -> "свет выключен"
+                            else -> "статус света неизвестен"
+                        }
+                        tts?.speak("$gateText, $lightText")
                     }
                     Command.UNKNOWN -> {
                         tts?.speak("Команда не распознана")
@@ -213,5 +278,24 @@ class VoiceService : Service() {
                 tts?.speak("Ошибка соединения с сервером")
             }
         }
+    }
+
+    private suspend fun handleMoving() {
+        tts?.speak("Ворота в движении, подождите")
+        repeat(3) { attempt ->
+            delay(30_000)
+            val status = try {
+                garageApi.gateStatus().status
+            }catch (e: Exception) {
+                return
+            }
+            if(status != "moving") {
+                val text = if (status == "open") "ворота открыты" else "ворота закрыты"
+                tts?.speak("Ворота остановились, $text")
+                return
+            }
+            if (attempt < 2) tts?.speak("Всё еще в движении, жду")
+        }
+        tts?.speak("Ворота долго в движении, проверьте вручную")
     }
 }
