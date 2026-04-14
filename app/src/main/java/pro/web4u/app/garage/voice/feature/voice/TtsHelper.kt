@@ -6,7 +6,7 @@ import android.speech.tts.UtteranceProgressListener
 import android.util.Log
 import java.util.Locale
 
-class TtsHelper(context: Context, private val onSpeakingChanged: (Boolean) -> Unit) {
+class TtsHelper(context: Context, private val onSpeakingChanged: (Boolean) -> Unit): TextSpeaker {
 
     private var tts: TextToSpeech? = null
     private var isReady = false
@@ -36,11 +36,9 @@ class TtsHelper(context: Context, private val onSpeakingChanged: (Boolean) -> Un
         }
     }
 
-    fun speak(text: String) {
+    override fun speak(text: String) {
         if(isReady) {
-            tts?.speak(text, TextToSpeech.QUEUE_FLUSH, null, null)
-        }else {
-            Log.w("TtsHelper", "TTS еще не готов, откладываем: $text")
+            tts?.speak(text, TextToSpeech.QUEUE_FLUSH, null, text)
         }
     }
 

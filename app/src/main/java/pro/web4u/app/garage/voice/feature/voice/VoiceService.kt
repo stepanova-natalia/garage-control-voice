@@ -24,8 +24,6 @@ import org.vosk.Model
 import org.vosk.Recognizer
 import pro.web4u.app.garage.voice.feature.garage.GarageApi
 import pro.web4u.app.garage.voice.feature.garage.GarageWebSocketClient
-import pro.web4u.app.garage.voice.feature.garage.GateCommandRequest
-import pro.web4u.app.garage.voice.feature.garage.LightCommandRequest
 import java.io.File
 import java.io.FileOutputStream
 import java.nio.ByteBuffer
@@ -37,6 +35,7 @@ class VoiceService : Service() {
 
     @Inject lateinit var garageApi: GarageApi
     @Inject lateinit var webSocketClient: GarageWebSocketClient
+    @Inject lateinit var commandExecutor: CommandExecutor
 
     companion object {
         private const val CHANNEL_ID = "voice_service_channel"
@@ -74,7 +73,7 @@ class VoiceService : Service() {
                 model = Model(modelDir)
                 Log.d("VoiceService", "Model создан")
 
-                val grammar = """["джарвис", "открой", "закрой", "ворота", "ворот", "включи", "выключи", "свет", "света", "статус", "[unk]"]"""
+                val grammar = """["джарвис", "открой", "закрой", "останови", "остановить", "продолжи", "продолжить", "ворота", "ворот", "движение", "включи", "выключи", "свет", "света", "статус", "[unk]"]"""
                 recognizer = Recognizer(model, 16000.0f, grammar)
 
                 tts?.speak("Привет!Я Джарвис. Готов к работе.")
@@ -149,7 +148,7 @@ class VoiceService : Service() {
     private fun buildNotification(): Notification {
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle("Голосовой помощник")
-            .setContentText("Джарвис ждет команды...")
+            .setContentText("Я Джарвис, жду команды...")
             .setSmallIcon(R.drawable.ic_btn_speak_now)
             .build()
     }
@@ -245,115 +244,29 @@ class VoiceService : Service() {
 
     private fun executeCommand(command: Command) {
         scope.launch {
-            try {
-                when (command) {
-                    Command.GATE_OPEN -> {
-                        tts?.speak("Проверяю статус ворот")
-                        val status = garageApi.gateStatus().status
-                        when (status) {
-                            "open" -> tts?.speak("Ворота уже открыты")
-                            "moving" -> handleMoving()
-                            else -> {
-                                garageApi.gate(GateCommandRequest("open"))
-                                tts?.speak("Открываю ворота")
-                            }
-                        }
-                    }
-                    Command.GATE_CLOSE -> {
-                        tts?.speak("Проверяю статус ворот")
-                        val status = garageApi.gateStatus().status
-                        when (status){
-                            "close" -> tts?.speak("Ворота уже закрыты")
-                            "moving" -> handleMoving()
-                            else -> {
-                                garageApi.gate(GateCommandRequest("close"))
-                                tts?.speak("Закрываю ворота")
-                            }
-                        }
-                    }
-                    Command.LIGHT_ON -> {
-                        tts?.speak("Проверяю статус света")
-                        val status = garageApi.lightStatus().status
-                        if(status == "on") {
-                            tts?.speak("Свет уже включен")
-                        }else{
-                            garageApi.light(LightCommandRequest("on"))
-                            tts?.speak("Включаю свет")
-                        }
-                    }
-                    Command.LIGHT_OFF -> {
-                        tts?.speak("Проверяю статус света")
-                        val status = garageApi.lightStatus().status
-                        if(status == "off") {
-                            tts?.speak("Свет уже выключен")
-                        }else{
-                            garageApi.light(LightCommandRequest("off"))
-                            tts?.speak("Выключаю свет")
-                        }
-                    }
-                    Command.GATE_STATUS -> {
-                        tts?.speak("Запрашиваю статус ворот")
-                        val status = garageApi.gateStatus().status
-                        val text = when (status) {
-                            "open" -> "Ворота открыты"
-                            "close" -> "Ворота закрыты"
-                            "moving" -> "Ворота в движении"
-                            else -> "Статус ворот неизвестен"
-                        }
-                        tts?.speak(text)
-                    }
-                    Command.LIGHT_STATUS -> {
-                        tts?.speak("Запрашиваю статус света")
-                        val status = garageApi.lightStatus().status
-                        val text = when (status) {
-                            "on" -> "Свет включён"
-                            "off" -> "Свет выключен"
-                            else -> "Статус света неизвестен"
-                        }
-                        tts?.speak(text)
-                    }
-                    Command.UNKNOWN -> {
-                        tts?.speak("Команда не распознана")
-                    }
-                }
-            }catch (e: Exception) {
-                Log.e("VoiceService", "Ошибка команды: ${e.message}")
-                tts?.speak("Ошибка соединения с сервером")
-            }
+            commandExecutor.execute(command, tts!!)
         }
     }
 
-    private suspend fun handleMoving() {
-        tts?.speak("Ворота в движении, подождите")
-        repeat(3) { attempt ->
-            delay(30_000)
-            val status = try {
-                garageApi.gateStatus().status
-            }catch (e: Exception) {
-                return
-            }
-            if(status != "moving") {
-                val text = if (status == "open") "ворота открыты" else "ворота закрыты"
-                tts?.speak("Ворота остановились, $text")
-                return
-            }
-            if (attempt < 2) tts?.speak("Всё еще в движении, жду")
-        }
-        tts?.speak("Ворота долго в движении, проверьте вручную")
-    }
-
-    private fun startWebSocket(){
+    private fun startWebSocket() {
         scope.launch {
-            webSocketClient.observeGateStatus()
-                .collect { status ->
-                    val text = when(status) {
-                        "open" -> "Ворота открыты"
-                        "close" -> "Ворота закрыты"
-                        else -> null
-                    }
-                    text?.let { tts?.speak(it) }
-                    Log.d("VoiceService", "Статус ворот: $status")
+            while (true) {
+                try {
+                    webSocketClient.observeGateStatus()
+                        .collect { status ->
+                            val text = when (status) {
+                                "open" -> "Ворота открыты"
+                                "closed" -> "Ворота закрыты"
+                                else -> null
+                            }
+                            text?.let { tts?.speak(it) }
+                            Log.d("VoiceService", "Статус ворот: $status")
+                        }
+                } catch (e: Exception) {
+                    Log.e("VoiceService", "WebSocket ошибка: ${e.message}")
+                    delay(5000)
                 }
+            }
         }
     }
 }
