@@ -4,6 +4,7 @@ import android.content.Context
 import dagger.hilt.android.qualifiers.ApplicationContext
 import javax.inject.Inject
 import javax.inject.Singleton
+import androidx.core.content.edit
 
 
 @Singleton
@@ -22,6 +23,6 @@ class VoiceSettings @Inject constructor(
     }
 
     fun saveAssistantName(name: String) {
-        prefs.edit().putString(KEY_ASSISTANT_NAME, name.lowercase()).apply()
+        prefs.edit { putString(KEY_ASSISTANT_NAME, name.lowercase()) }
     }
 }

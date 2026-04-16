@@ -8,6 +8,9 @@ import pro.web4u.app.garage.voice.feature.voice.stt.VoskRecognizer
 import pro.web4u.app.garage.voice.feature.voice.tts.TtsHelper
 import javax.inject.Inject
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import pro.web4u.app.garage.voice.core.AppLogger
 import pro.web4u.app.garage.voice.core.storage.VoiceSettings
 import javax.inject.Singleton
@@ -18,6 +21,9 @@ class VoiceSession @Inject constructor(
     private val ttsHelper: TtsHelper,
     private val voiceSettings: VoiceSettings
 ) {
+    private val _state = MutableStateFlow(VoiceState.IDLE)
+    val state: StateFlow<VoiceState> = _state.asStateFlow()
+
     private lateinit var recognizer: VoskRecognizer
 
     private val assistantName get() = voiceSettings.getAssistantName()
@@ -54,9 +60,10 @@ class VoiceSession @Inject constructor(
             if (handled) {
                 timeoutJob?.cancel()
                 isListeningForCommand = false
+                _state.value = VoiceState.IDLE
             } else {
-                delay(300)
                 isListeningForCommand = true
+                _state.value = VoiceState.LISTENING
                 startTimeout(scope)
             }
         } else if (isListeningForCommand) {
@@ -64,6 +71,7 @@ class VoiceSession @Inject constructor(
             if (handled) {
                 timeoutJob?.cancel()
                 isListeningForCommand = false
+                _state.value = VoiceState.IDLE
             }
         }
     }
@@ -74,6 +82,7 @@ class VoiceSession @Inject constructor(
             delay(5000)
             if(isListeningForCommand) {
                 isListeningForCommand = false
+                _state.value = VoiceState.IDLE
                 AppLogger.d("VoiceSession", "Таймаут - возврат в режим ожидания")
             }
         }

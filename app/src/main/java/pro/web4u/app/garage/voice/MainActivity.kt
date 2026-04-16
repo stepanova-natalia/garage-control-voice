@@ -13,10 +13,12 @@ import androidx.compose.runtime.*
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import dagger.hilt.android.AndroidEntryPoint
+import pro.web4u.app.garage.voice.core.storage.VoiceSettings
 import pro.web4u.app.garage.voice.feature.voice.VoiceService
 import pro.web4u.app.garage.voice.ui.login.LoginScreen
 import pro.web4u.app.garage.voice.ui.login.LoginViewModel
 import pro.web4u.app.garage.voice.ui.main.MainScreen
+import pro.web4u.app.garage.voice.ui.main.MainViewModel
 import pro.web4u.app.garage.voice.ui.settings.SettingsScreen
 import pro.web4u.app.garage.voice.ui.theme.GarageVoiceTheme
 
@@ -24,6 +26,8 @@ import pro.web4u.app.garage.voice.ui.theme.GarageVoiceTheme
 class MainActivity : ComponentActivity() {
 
     private val loginViewModel: LoginViewModel by viewModels()
+
+    private val mainViewModel: MainViewModel by viewModels()
 
     private val requestPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
@@ -59,7 +63,11 @@ class MainActivity : ComponentActivity() {
                     }
                     else -> {
                         checkAndRequestPermission()
-                        MainScreen(onSettingsClick = { showSettings = true })
+                        MainScreen(
+                            assistantName = VoiceSettings(this).getAssistantName(),
+                            voiceState = mainViewModel.voiceState.collectAsStateWithLifecycle().value,
+                            onSettingsClick = { showSettings = true }
+                        )
                     }
                 }
             }

@@ -79,6 +79,7 @@ dependencies {
     implementation("androidx.security:security-crypto:1.1.0-alpha06")
     implementation("com.google.dagger:hilt-android:2.56")
     kapt("com.google.dagger:hilt-android-compiler:2.56")
+    implementation("androidx.compose.material:material-icons-extended")
     //Test
     testImplementation("org.mockito:mockito-core:5.11.0")
     testImplementation("org.mockito.kotlin:mockito-kotlin:5.3.1")
