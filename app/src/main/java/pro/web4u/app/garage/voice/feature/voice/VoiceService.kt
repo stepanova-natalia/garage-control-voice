@@ -1,16 +1,11 @@
 package pro.web4u.app.garage.voice.feature.voice
 
-import android.R
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.Service
 import android.content.Intent
-import android.media.AudioFormat
-import android.media.AudioRecord
-import android.media.MediaRecorder
 import android.os.IBinder
-import android.util.Log
 import androidx.core.app.NotificationCompat
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.CoroutineScope
@@ -18,24 +13,28 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
-import org.json.JSONObject
-import org.vosk.Model
-import org.vosk.Recognizer
-import pro.web4u.app.garage.voice.feature.garage.GarageApi
+import pro.web4u.app.garage.voice.core.AppLogger
 import pro.web4u.app.garage.voice.feature.garage.GarageWebSocketClient
-import java.io.File
-import java.io.FileOutputStream
-import java.nio.ByteBuffer
-import java.nio.ByteOrder
+import pro.web4u.app.garage.voice.feature.voice.handler.CommandRegistry
+import pro.web4u.app.garage.voice.feature.voice.handler.GateCommandHandler
+import pro.web4u.app.garage.voice.feature.voice.handler.LightCommandHandler
+import pro.web4u.app.garage.voice.feature.voice.stt.VoskRecognizer
+import pro.web4u.app.garage.voice.feature.voice.tts.TtsHelper
 import javax.inject.Inject
+import  java.io.File
+import java.io.FileOutputStream
+import androidx.core.content.edit
 
 @AndroidEntryPoint
 class VoiceService : Service() {
 
-    @Inject lateinit var garageApi: GarageApi
+    @Inject lateinit var ttsHelper: TtsHelper
+    @Inject lateinit var voskRecognizer: VoskRecognizer
+    @Inject lateinit var voiceSession: VoiceSession
     @Inject lateinit var webSocketClient: GarageWebSocketClient
-    @Inject lateinit var commandExecutor: CommandExecutor
+    @Inject lateinit var gateCommandHandler: GateCommandHandler
+    @Inject lateinit var lightCommandHandler: LightCommandHandler
+    @Inject lateinit var commandRegistry: CommandRegistry
 
     companion object {
         private const val CHANNEL_ID = "voice_service_channel"
@@ -44,52 +43,53 @@ class VoiceService : Service() {
 
     private val job = SupervisorJob()
     private val scope = CoroutineScope(Dispatchers.IO + job)
-    private var model: Model? = null
-    private var recognizer: Recognizer? = null
-    private var audioRecord: AudioRecord? = null
-    private var tts: TtsHelper? = null
-    private var isSpeaking = false
-    private var isListeningForCommand = false
-    private var listeningtimeoutJob: kotlinx.coroutines.Job? = null
 
-    override fun onBind(p0: Intent?): IBinder? = null
+    override fun onBind(intent: Intent?): IBinder? = null
+
+    private fun setupRegistry() {
+        commandRegistry.register(gateCommandHandler)
+        commandRegistry.register(lightCommandHandler)
+    }
+
+    private fun startService() {
+        scope.launch {
+            while (ttsHelper.isReady() == false) {
+                delay(100)
+            }
+            initVosk()
+            startWebSocket()
+        }
+    }
 
     override fun onCreate() {
-        Log.d("VoiceService", "onCreate вызван")
+        AppLogger.d("VoiceService", "onCreate вызван")
         super.onCreate()
         createNotificationChannel()
         startForeground(NOTIFICATION_ID, buildNotification())
-        tts = TtsHelper(this) { speaking -> isSpeaking = speaking }
-        initVosk()
+        setupRegistry()
+        startService()
     }
 
-    private fun initVosk() {
-        scope.launch {
-            try {
-                while (tts?.isReady() == false) delay(100)
-
-                val modelDir = applicationContext.filesDir.absolutePath + "/model-ru"
-                copyModelFromAssets(modelDir)
-                model = Model(modelDir)
-                Log.d("VoiceService", "Model создан")
-
-                val grammar = """["джарвис", "открой", "закрой", "останови", "остановить", "продолжи", "продолжить", "ворота", "ворот", "движение", "включи", "выключи", "свет", "света", "статус", "[unk]"]"""
-                recognizer = Recognizer(model, 16000.0f, grammar)
-
-                tts?.speak("Привет!Я Джарвис. Готов к работе.")
+    private suspend fun initVosk() {
+        try {
+            val modelDir = applicationContext.filesDir.absolutePath + "/model-ru"
+            copyModelFromAssets(modelDir)
+            voskRecognizer.init(
+                modelDir,
+                """["окей", "джарвис", "открой", "закрой", "останови", "остановить", "продолжи", "продолжить", "ворота", "ворот", "движение", "включи", "выключи", "свет", "света", "статус", "[unk]"]"""
+            )
+            if(isFirstStart()) {
+                ttsHelper.speak("Привет! Я Джарвис. Готов к работе.")
                 delay(3000)
-
-                startListening()
-                startWebSocket()
-
-                if (audioRecord?.state != AudioRecord.STATE_INITIALIZED) {
-                    tts?.speak("Ошибка микрофона, перезапустите приложение")
-                    return@launch
-                }
-                Log.d("VoiceService", "Vosk модель загружена")
-            } catch (e: Exception) {
-                Log.e("VoiceService", "Ошибка загрузки модели: ${e.message}")
             }
+            voiceSession.setRecognizer(voskRecognizer)
+            scope.launch {
+                voiceSession.start(scope)
+            }
+            AppLogger.d("VoiceService", "Vosk модель загружена")
+        } catch (e: Exception) {
+            AppLogger.e("VoiceService", "Ошибка загрузки модели: ${e.message}")
+            ttsHelper.speak("Ошибка загрузка модели, перезапустите приложение")
         }
     }
 
@@ -126,12 +126,9 @@ class VoiceService : Service() {
 
     override fun onDestroy() {
         job.cancel()
-        audioRecord?.stop()
-        audioRecord?.release()
-        audioRecord = null
-        recognizer?.close()
-        model?.close()
-        tts?.shutdown()
+        voiceSession.stop()
+        ttsHelper.shutdown()
+        voskRecognizer.close()
         super.onDestroy()
     }
 
@@ -149,124 +146,41 @@ class VoiceService : Service() {
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle("Голосовой помощник")
             .setContentText("Я Джарвис, жду команды...")
-            .setSmallIcon(R.drawable.ic_btn_speak_now)
+            .setSmallIcon(android.R.drawable.ic_btn_speak_now)
             .build()
-    }
-
-    private suspend fun startListening() {
-        val bufferSize = AudioRecord.getMinBufferSize(
-            16000,
-            AudioFormat.CHANNEL_IN_MONO,
-            AudioFormat.ENCODING_PCM_16BIT
-        )
-        delay(500)
-        withContext(Dispatchers.Main) {
-            try {
-                audioRecord = AudioRecord(
-                    MediaRecorder.AudioSource.MIC,
-                    16000,
-                    AudioFormat.CHANNEL_IN_MONO,
-                    AudioFormat.ENCODING_PCM_16BIT,
-                    bufferSize
-                )
-            } catch (e: SecurityException) {
-                Log.e("VoiceService", "SecurityException: ${e.message}")
-                tts?.speak("Нет разрешения на микрофон")
-                return@withContext
-            } catch (e: Exception) {
-                Log.e("VoiceService", "Ошибка создания AudioRecord: ${e.message}")
-                tts?.speak("Ошибка микрофона")
-                return@withContext
-            }
-            if (audioRecord?.state != AudioRecord.STATE_INITIALIZED) {
-                Log.e("VoiceService", "AudioRecord не инициализирован")
-                tts?.speak("Ошибка микрофона, перезапустите приложение")
-                return@withContext
-            }
-            audioRecord?.startRecording()
-        }
-
-        if(audioRecord?.state != AudioRecord.STATE_INITIALIZED) return
-
-        scope.launch(Dispatchers.IO) {
-            val buffer = ShortArray(bufferSize)
-            while (true) {
-                val read = audioRecord?.read(buffer, 0, buffer.size) ?: break
-                if(read > 0) {
-                    val bytes = ShortArray(read) { buffer[it] }
-                        .let { shorts ->
-                            val byteBuffer = ByteBuffer
-                                .allocate(shorts.size*2)
-                                .order(ByteOrder.LITTLE_ENDIAN)
-                            shorts.forEach { byteBuffer.putShort(it) }
-                            byteBuffer.array()
-                        }
-                    if(!isSpeaking && recognizer?.acceptWaveForm(bytes, bytes.size) == true) {
-                        val result = recognizer?.result
-                        val json = JSONObject(result ?: "{}")
-                        val text = json.optString("text")
-                        if(text.isNotBlank()) {
-                            Log.d("VoiceService", "Текст: $text | Слушаю команду: $isListeningForCommand")
-                            if(!isListeningForCommand) {
-                                if(text.lowercase().contains("джарвис")){
-                                    isListeningForCommand = true
-                                    tts?.speak("Слушаю")
-                                    listeningtimeoutJob?.cancel()
-                                    listeningtimeoutJob = scope.launch {
-                                        delay(5000)
-                                        if(isListeningForCommand) {
-                                            isListeningForCommand = false
-                                            Log.d("VoiceService", "Таймаут — возврат в режим ожидания")
-                                        }
-                                    }
-                                }
-                            } else {
-                               val command = CommandParser.parse(text, "джарвис")
-                               if (command != Command.UNKNOWN) {
-                                   listeningtimeoutJob?.cancel()
-                                   isListeningForCommand = false
-                                   executeCommand(command)
-                               }
-                            }
-                            val command = CommandParser.parse(text, "джарвис")
-                            Log.d("VoiceService", "Текст: $text | Команда: $command")
-                            if(command != Command.UNKNOWN) {
-                                executeCommand(command)
-                            }
-                        }
-
-
-                    }
-                }
-            }
-        }
-    }
-
-    private fun executeCommand(command: Command) {
-        scope.launch {
-            commandExecutor.execute(command, tts!!)
-        }
     }
 
     private fun startWebSocket() {
         scope.launch {
-            while (true) {
-                try {
-                    webSocketClient.observeGateStatus()
-                        .collect { status ->
-                            val text = when (status) {
-                                "open" -> "Ворота открыты"
-                                "closed" -> "Ворота закрыты"
-                                else -> null
-                            }
-                            text?.let { tts?.speak(it) }
-                            Log.d("VoiceService", "Статус ворот: $status")
-                        }
-                } catch (e: Exception) {
-                    Log.e("VoiceService", "WebSocket ошибка: ${e.message}")
-                    delay(5000)
+            var lastStatus: String? = null
+
+            webSocketClient.gateStatus.collect { status ->
+                AppLogger.d("VoiceService", "lastStatus=$lastStatus новый=$status")
+                if(lastStatus != null && lastStatus != status){
+                    val text = when (status) {
+                        "open" -> "Ворота открыты"
+                        "close" -> "Ворота закрыты"
+                        "moving" -> "Ворота в движении"
+                        "stop" -> "Ворота остановились"
+                        else -> null
+                    }
+                    text?.let { ttsHelper.speak(it) }
                 }
+                lastStatus = status
             }
         }
+        scope.launch {
+            webSocketClient.isConnected
+                .collect { connected ->
+                    if(!connected) ttsHelper.speak("Нет связи с сервером")
+                }
+        }
+    }
+
+    private fun isFirstStart(): Boolean {
+        val prefs = getSharedPreferences("voice_service", MODE_PRIVATE)
+        val first = prefs.getBoolean("first_start", true)
+        if(first) prefs.edit { putBoolean("first_start", false) }
+        return first
     }
 }

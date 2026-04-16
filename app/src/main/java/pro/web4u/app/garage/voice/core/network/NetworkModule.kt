@@ -16,6 +16,8 @@ import javax.inject.Singleton
 import okhttp3.logging.HttpLoggingInterceptor
 import pro.web4u.app.garage.voice.core.storage.ServerSettings
 import pro.web4u.app.garage.voice.feature.garage.GarageApi
+import pro.web4u.app.garage.voice.feature.voice.tts.TextSpeaker
+import pro.web4u.app.garage.voice.feature.voice.tts.TtsHelper
 import retrofit2.Retrofit
 import retrofit2.converter.gson.GsonConverterFactory
 import java.security.cert.CertificateException
@@ -95,4 +97,8 @@ object NetworkModule {
     @Provides
     @Singleton
     fun provideGarageApi(retrofit: Retrofit): GarageApi = retrofit.create(GarageApi::class.java)
+
+    @Provides
+    @Singleton
+    fun provideTts(ttsHelper: TtsHelper): TextSpeaker = ttsHelper
 }

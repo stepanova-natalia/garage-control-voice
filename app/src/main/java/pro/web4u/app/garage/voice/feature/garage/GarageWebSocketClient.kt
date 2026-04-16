@@ -2,9 +2,17 @@ package pro.web4u.app.garage.voice.feature.garage
 
 import android.content.Context
 import dagger.hilt.android.qualifiers.ApplicationContext
-import kotlinx.coroutines.channels.awaitClose
-import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.callbackFlow
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.Response
@@ -20,7 +28,21 @@ class GarageWebSocketClient @Inject constructor(
     private val okHttpClient: OkHttpClient,
     @ApplicationContext private val context: Context
 ) {
-    fun observeGateStatus(): Flow<String> = callbackFlow {
+    private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+
+    private val _gateStatus = MutableSharedFlow<String>(replay = 1)
+    val gateStatus: SharedFlow<String> = _gateStatus.asSharedFlow()
+
+    private val _isConnected = MutableStateFlow(false)
+    val isConnected: StateFlow<Boolean> = _isConnected.asStateFlow()
+
+    private var webSocket: WebSocket? = null
+
+    init {
+        connect()
+    }
+
+    private fun connect(){
         val baseUrl = ServerSettings.getServerUrl(context).trimEnd('/')
         val url = baseUrl
             .replace("https://", "wss://")
@@ -28,20 +50,30 @@ class GarageWebSocketClient @Inject constructor(
 
         val request = Request.Builder().url(url).build()
 
-        val webSocket = okHttpClient.newWebSocket(request, object : WebSocketListener() {
+        webSocket = okHttpClient.newWebSocket(request, object : WebSocketListener(){
+
             override fun onMessage(webSocket: WebSocket, text: String) {
+                _isConnected.value = true
                 val status = JSONObject(text).getString("status")
-                trySend(status)
+                scope.launch { _gateStatus.emit(status) }
             }
 
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
-                close(t)
+                _isConnected.value = false
+                scope.launch {
+                    delay(5000)
+                    connect()
+                }
             }
 
             override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
-                close()
+                scope.launch {
+                    delay(5000)
+                    connect()
+                }
             }
         })
-        awaitClose {webSocket.close(1000, "cancelled")}
+
+        fun observeGateStatus() = gateStatus
     }
 }
