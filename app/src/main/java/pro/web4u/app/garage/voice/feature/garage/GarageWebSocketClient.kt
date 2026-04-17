@@ -30,7 +30,7 @@ class GarageWebSocketClient @Inject constructor(
 ) {
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
-    private val _gateStatus = MutableSharedFlow<String>(replay = 1)
+    private val _gateStatus = MutableSharedFlow<String>(replay = 0)
     val gateStatus: SharedFlow<String> = _gateStatus.asSharedFlow()
 
     private val _isConnected = MutableStateFlow(false)

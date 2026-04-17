@@ -45,6 +45,11 @@ class GateCommandHandler @Inject constructor(
         when(status){
             "open" -> tts.speak("Ворота уже открыты")
             "moving" -> waitForResult()
+            "stop" -> {
+                garageApi.gate(GateCommandRequest("open"))
+                waitForMoving()
+                waitForResult()
+            }
             else -> {
                 garageApi.gate(GateCommandRequest("open"))
                 waitForMoving()
@@ -59,6 +64,11 @@ class GateCommandHandler @Inject constructor(
         when(status) {
             "close" -> tts.speak("Ворота уже закрыты")
             "moving" -> waitForResult()
+            "stop" -> {
+                garageApi.gate(GateCommandRequest("close"))
+                waitForMoving()
+                waitForResult()
+            }
             else -> {
                 garageApi.gate(GateCommandRequest("close"))
                 waitForMoving()
@@ -71,7 +81,7 @@ class GateCommandHandler @Inject constructor(
         tts.speak("Команда получена, выполняю")
         val status = getStatus()
         if(status == "moving"){
-            garageApi.gate(GateCommandRequest("open"))
+            garageApi.gate(GateCommandRequest("stop"))
             tts.speak("Команда остановки отправлена")
         }else{
             tts.speak(gateStatusText(status))
@@ -81,8 +91,8 @@ class GateCommandHandler @Inject constructor(
     private suspend fun handleContinue() {
         tts.speak("Команда получена, выполняю")
         val status = getStatus()
-        if(status == "moving") {
-            garageApi.gate(GateCommandRequest("open"))
+        if(status == "stop") {
+            garageApi.gate(GateCommandRequest("continue"))
             tts.speak("Продолжаю движение")
         }else{
             tts.speak(gateStatusText(status))
@@ -95,23 +105,14 @@ class GateCommandHandler @Inject constructor(
     }
 
     private suspend fun waitForMoving(){
-        val moving = withTimeoutOrNull(10_000) {
+        withTimeoutOrNull(10_000) {
             webSocketClient.gateStatus.first { it == "moving" }
-        }
-        if (moving != null) {
-            tts.speak("Ворота в движении")
         }
     }
 
     private suspend fun waitForResult() {
-        val result =withTimeoutOrNull(60_000) {
-            webSocketClient.gateStatus
-                .first { it == "open" || it == "close" }
-        }
-        when (result) {
-            "open" -> tts.speak("Ворота открыты")
-            "close" -> tts.speak("Ворота закрыты")
-            null -> tts.speak("Ворота долго в движении, проверьте вручную")
+        withTimeoutOrNull(60_000) {
+            webSocketClient.gateStatus.first { it == "open" || it == "close" }
         }
     }
 

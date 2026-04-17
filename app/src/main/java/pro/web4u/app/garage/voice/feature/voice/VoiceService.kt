@@ -183,6 +183,4 @@ class VoiceService : Service() {
         if(first) prefs.edit { putBoolean("first_start", false) }
         return first
     }
-
-    fun getVoiceState() = voiceSession.state
 }
