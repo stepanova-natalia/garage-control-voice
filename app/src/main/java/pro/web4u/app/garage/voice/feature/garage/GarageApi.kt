@@ -26,15 +26,15 @@ data class LightStatusResponse(
 
 interface GarageApi {
 
-    @POST("/garage/command")
+    @POST("/v1/garage/command")
     suspend fun gate(@Body request: GateCommandRequest): Unit
 
-    @POST("/garage/light")
+    @POST("/v1/garage/light")
     suspend fun light(@Body request: LightCommandRequest): Unit
 
-    @GET("garage/status")
+    @GET("v1/garage/status")
     suspend fun gateStatus(): GateStatusResponse
 
-    @GET("garage/light/status")
+    @GET("v1/garage/light/status")
     suspend fun lightStatus(): LightStatusResponse
 }

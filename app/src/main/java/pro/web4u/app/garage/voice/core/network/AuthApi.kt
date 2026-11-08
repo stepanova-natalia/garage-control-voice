@@ -23,12 +23,10 @@ data class RefreshTokenResponse(
     @SerializedName("refreshToken") val refreshToken: String
 )
 
-
-
 interface AuthApi {
-    @POST("auth/login")
-    suspend fun login(@Body request: LoginRequest) : LoginResponse
+    @POST(ApiConstants.AUTH_LOGIN)
+    suspend fun login(@Body request: LoginRequest): LoginResponse
 
-    @POST("auth/refresh")
-    suspend fun refresh(@Body request: RefreshTokenRequest) : RefreshTokenResponse
+    @POST(ApiConstants.AUTH_REFRESH)
+    suspend fun refresh(@Body request: RefreshTokenRequest): RefreshTokenResponse
 }
