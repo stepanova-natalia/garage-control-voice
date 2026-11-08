@@ -1,15 +1,18 @@
 package pro.web4u.app.garage.voice.feature.voice.handler
 
-
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withTimeoutOrNull
 import pro.web4u.app.garage.voice.core.AppLogger
 import pro.web4u.app.garage.voice.feature.garage.GarageApi
 import pro.web4u.app.garage.voice.feature.garage.GarageWebSocketClient
 import pro.web4u.app.garage.voice.feature.garage.GateCommandRequest
+import pro.web4u.app.garage.voice.feature.garage.domain.GateStatus
 import pro.web4u.app.garage.voice.feature.voice.tts.TextSpeaker
 import javax.inject.Inject
 import javax.inject.Singleton
+import retrofit2.HttpException
+import java.io.IOException
+import kotlin.time.Duration.Companion.seconds
 
 @Singleton
 class GateCommandHandler @Inject constructor(
@@ -17,8 +20,7 @@ class GateCommandHandler @Inject constructor(
     private val tts: TextSpeaker,
     private val webSocketClient: GarageWebSocketClient
 ) : CommandHandler {
-    private var cachedStatus: String = "unknown"
-
+    private var cachedStatus: GateStatus = GateStatus.UNKNOWN
 
     override fun canHandle(text: String): Boolean {
         val t = text.lowercase()
@@ -41,17 +43,10 @@ class GateCommandHandler @Inject constructor(
 
     private suspend fun handleOpen() {
         tts.speak("Команда получена, выполняю")
-        val status = getStatus()
-        when(status){
-            "open" -> tts.speak("Ворота уже открыты")
-            "moving" -> waitForResult()
-            "stop" -> {
-                garageApi.gate(GateCommandRequest("open"))
-                waitForMoving()
-                waitForResult()
-            }
-            else -> {
-                garageApi.gate(GateCommandRequest("open"))
+        when (getStatus()) {
+            GateStatus.OPEN -> tts.speak("Ворота уже открыты")
+            GateStatus.MOVE -> waitForResult()
+            else -> if (sendCommand("open")) {
                 waitForMoving()
                 waitForResult()
             }
@@ -60,17 +55,10 @@ class GateCommandHandler @Inject constructor(
 
     private suspend fun handleClose() {
         tts.speak("Команда получена, выполняю")
-        val status = getStatus()
-        when(status) {
-            "close" -> tts.speak("Ворота уже закрыты")
-            "moving" -> waitForResult()
-            "stop" -> {
-                garageApi.gate(GateCommandRequest("close"))
-                waitForMoving()
-                waitForResult()
-            }
-            else -> {
-                garageApi.gate(GateCommandRequest("close"))
+        when (getStatus()) {
+            GateStatus.CLOSE -> tts.speak("Ворота уже закрыты")
+            GateStatus.MOVE -> waitForResult()
+            else -> if (sendCommand("close")) {
                 waitForMoving()
                 waitForResult()
             }
@@ -80,10 +68,9 @@ class GateCommandHandler @Inject constructor(
     private suspend fun handleStop() {
         tts.speak("Команда получена, выполняю")
         val status = getStatus()
-        if(status == "moving"){
-            garageApi.gate(GateCommandRequest("stop"))
-            tts.speak("Команда остановки отправлена")
-        }else{
+        if (status == GateStatus.MOVE) {
+            if (sendCommand("stop")) tts.speak("Команда остановки отправлена")
+        } else {
             tts.speak(gateStatusText(status))
         }
     }
@@ -91,47 +78,68 @@ class GateCommandHandler @Inject constructor(
     private suspend fun handleContinue() {
         tts.speak("Команда получена, выполняю")
         val status = getStatus()
-        if(status == "stop") {
-            garageApi.gate(GateCommandRequest("continue"))
-            tts.speak("Продолжаю движение")
-        }else{
+        if (status == GateStatus.STOP) {
+            if (sendCommand("continue")) tts.speak("Продолжаю движение")
+        } else {
             tts.speak(gateStatusText(status))
         }
     }
 
     private suspend fun handleStatus() {
-        val status = getStatus()
-        tts.speak(gateStatusText(status))
+        tts.speak(gateStatusText(getStatus()))
     }
 
-    private suspend fun waitForMoving(){
-        withTimeoutOrNull(10_000) {
-            webSocketClient.gateStatus.first { it == "moving" }
+    private suspend fun sendCommand(action: String): Boolean {
+        try {
+            garageApi.gate(GateCommandRequest(action))
+            return true
+        } catch (e: HttpException) {
+            AppLogger.e("GateCommandHandler", "Команда $action отклонена: ${e.code()}")
+            val error = e.toCommandError()
+            // on 409 the current gate state tells why better than a generic phrase
+            val phrase = if (error == CommandError.Rejected) gateStatusText(getStatus()) else error.toSpeech()
+            tts.speak(phrase)
+        } catch (e: IOException) {
+            AppLogger.e("GateCommandHandler", "Команда $action не отправлена: ${e.message}")
+            tts.speak(CommandError.ServerUnavailable.toSpeech())
+        }
+        return false
+    }
+
+    private suspend fun waitForMoving() {
+        withTimeoutOrNull(MOVE_START_TIMEOUT) {
+            webSocketClient.gateStatus.first { GateStatus.fromRaw(it) == GateStatus.MOVE }
         }
     }
 
     private suspend fun waitForResult() {
-        withTimeoutOrNull(60_000) {
-            webSocketClient.gateStatus.first { it == "open" || it == "close" }
+        withTimeoutOrNull(TRAVEL_TIMEOUT) {
+            webSocketClient.gateStatus.first {
+                val status = GateStatus.fromRaw(it)
+                status == GateStatus.OPEN || status == GateStatus.CLOSE
+            }
         }
     }
 
-    private suspend fun getStatus(): String {
+    private suspend fun getStatus(): GateStatus {
         return try {
-            val status = garageApi.gateStatus().status
-            cachedStatus = status
-            status
+            GateStatus.fromRaw(garageApi.gateStatus().status).also { cachedStatus = it }
         } catch (e: Exception) {
             AppLogger.e("GateCommandHandler", "Ошибка статуса: ${e.message}")
             cachedStatus
         }
     }
 
-    private fun gateStatusText(status: String) = when (status) {
-        "open" -> "Ворота открыты"
-        "close" -> "Ворота закрыты"
-        "moving" -> "Ворота в движении"
-        "stop" -> "Ворота остановлены"
-        else -> "Статус ворот неизвестен"
+    private fun gateStatusText(status: GateStatus) = when (status) {
+        GateStatus.OPEN -> "Ворота открыты"
+        GateStatus.CLOSE -> "Ворота закрыты"
+        GateStatus.MOVE -> "Ворота в движении"
+        GateStatus.STOP -> "Ворота остановлены"
+        GateStatus.UNKNOWN -> "Статус ворот неизвестен"
+    }
+
+    companion object {
+        private val MOVE_START_TIMEOUT = 10.seconds
+        private val TRAVEL_TIMEOUT = 60.seconds
     }
 }

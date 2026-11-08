@@ -9,21 +9,25 @@ import android.os.IBinder
 import androidx.core.app.NotificationCompat
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import pro.web4u.app.garage.voice.core.AppLogger
 import pro.web4u.app.garage.voice.feature.garage.GarageWebSocketClient
+import pro.web4u.app.garage.voice.feature.garage.domain.GateStatus
 import pro.web4u.app.garage.voice.feature.voice.handler.CommandRegistry
 import pro.web4u.app.garage.voice.feature.voice.handler.GateCommandHandler
 import pro.web4u.app.garage.voice.feature.voice.handler.LightCommandHandler
 import pro.web4u.app.garage.voice.feature.voice.stt.VoskRecognizer
 import pro.web4u.app.garage.voice.feature.voice.tts.TtsHelper
 import javax.inject.Inject
-import  java.io.File
+import java.io.File
 import java.io.FileOutputStream
 import androidx.core.content.edit
+import kotlin.time.Duration.Companion.milliseconds
+import kotlin.time.Duration.Companion.seconds
 
 @AndroidEntryPoint
 class VoiceService : Service() {
@@ -39,10 +43,17 @@ class VoiceService : Service() {
     companion object {
         private const val CHANNEL_ID = "voice_service_channel"
         private const val NOTIFICATION_ID = 1
+        private val TTS_READY_POLL_INTERVAL = 100.milliseconds
+        private val GREETING_PAUSE = 3.seconds
     }
 
     private val job = SupervisorJob()
-    private val scope = CoroutineScope(Dispatchers.IO + job)
+    // without it one unexpected exception kills the whole service and it stops listening
+    private val unexpectedErrorHandler = CoroutineExceptionHandler { _, e ->
+        AppLogger.e("VoiceService", "Необработанная ошибка", e)
+        ttsHelper.speak("Нераспознанная ошибка, записал в лог")
+    }
+    private val scope = CoroutineScope(Dispatchers.IO + job + unexpectedErrorHandler)
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -53,8 +64,8 @@ class VoiceService : Service() {
 
     private fun startService() {
         scope.launch {
-            while (ttsHelper.isReady() == false) {
-                delay(100)
+            while (!ttsHelper.isReady()) {
+                delay(TTS_READY_POLL_INTERVAL)
             }
             initVosk()
             startWebSocket()
@@ -80,7 +91,7 @@ class VoiceService : Service() {
             )
             if(isFirstStart()) {
                 ttsHelper.speak("Привет! Я Джарвис. Готов к работе.")
-                delay(3000)
+                delay(GREETING_PAUSE)
             }
             voiceSession.setRecognizer(voskRecognizer)
             scope.launch {
@@ -152,17 +163,18 @@ class VoiceService : Service() {
 
     private fun startWebSocket() {
         scope.launch {
-            var lastStatus: String? = null
+            var lastStatus: GateStatus? = null
 
-            webSocketClient.gateStatus.collect { status ->
+            webSocketClient.gateStatus.collect { raw ->
+                val status = GateStatus.fromRaw(raw)
                 AppLogger.d("VoiceService", "lastStatus=$lastStatus новый=$status")
-                if(lastStatus != null && lastStatus != status){
+                if (lastStatus != null && lastStatus != status) {
                     val text = when (status) {
-                        "open" -> "Ворота открыты"
-                        "close" -> "Ворота закрыты"
-                        "moving" -> "Ворота в движении"
-                        "stop" -> "Ворота остановились"
-                        else -> null
+                        GateStatus.OPEN -> "Ворота открыты"
+                        GateStatus.CLOSE -> "Ворота закрыты"
+                        GateStatus.MOVE -> "Ворота в движении"
+                        GateStatus.STOP -> "Ворота остановились"
+                        GateStatus.UNKNOWN -> null
                     }
                     text?.let { ttsHelper.speak(it) }
                 }
