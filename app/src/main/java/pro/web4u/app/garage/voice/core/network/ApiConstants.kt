@@ -6,4 +6,5 @@ object ApiConstants {
 
     const val AUTH_LOGIN = "$API_VERSION/auth/login"
     const val AUTH_REFRESH = "$API_VERSION/auth/refresh"
+    const val GATE_WS = "$API_VERSION/garage/ws"
 }

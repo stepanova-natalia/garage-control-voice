@@ -20,13 +20,17 @@ import okhttp3.WebSocket
 import okhttp3.WebSocketListener
 import org.json.JSONObject
 import pro.web4u.app.garage.voice.core.storage.ServerSettings
+import pro.web4u.app.garage.voice.core.auth.TokenStorage
+import pro.web4u.app.garage.voice.core.network.ApiConstants
 import javax.inject.Inject
 import javax.inject.Singleton
+import kotlin.time.Duration.Companion.seconds
 
 @Singleton
 class GarageWebSocketClient @Inject constructor(
     private val okHttpClient: OkHttpClient,
-    @ApplicationContext private val context: Context
+    @param:ApplicationContext private val context: Context,
+    private val tokenStorage: TokenStorage
 ) {
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
@@ -46,11 +50,16 @@ class GarageWebSocketClient @Inject constructor(
         val baseUrl = ServerSettings.getServerUrl(context).trimEnd('/')
         val url = baseUrl
             .replace("https://", "wss://")
-            .replace("http://", "ws://") + "/garage/ws"
+            .replace("http://", "ws://") + "/" + ApiConstants.GATE_WS
 
         val request = Request.Builder().url(url).build()
 
         webSocket = okHttpClient.newWebSocket(request, object : WebSocketListener(){
+            override fun onOpen(webSocket: WebSocket, response: Response) {
+                // the backend reads the token from the first frame and ignores the Authorization header
+                val token = tokenStorage.getAccessToken()
+                if (token != null) webSocket.send(token) else webSocket.close(NORMAL_CLOSURE, "no access token")
+            }
 
             override fun onMessage(webSocket: WebSocket, text: String) {
                 _isConnected.value = true
@@ -61,19 +70,21 @@ class GarageWebSocketClient @Inject constructor(
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
                 _isConnected.value = false
                 scope.launch {
-                    delay(5000)
+                    delay(RECONNECT_DELAY)
                     connect()
                 }
             }
 
             override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
                 scope.launch {
-                    delay(5000)
+                    delay(RECONNECT_DELAY)
                     connect()
                 }
             }
         })
-
-        fun observeGateStatus() = gateStatus
+    }
+    companion object {
+        private const val NORMAL_CLOSURE = 1000
+        private val RECONNECT_DELAY = 5.seconds
     }
 }
